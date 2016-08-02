@@ -15,6 +15,9 @@
 
 #include <SITL/SIM_Multicopter.h>
 #include <SITL/SIM_Helicopter.h>
+#include <SITL/SIM_SingleCopter.h>
+#include <SITL/SIM_Plane.h>
+#include <SITL/SIM_QuadPlane.h>
 #include <SITL/SIM_Rover.h>
 #include <SITL/SIM_CRRCSim.h>
 #include <SITL/SIM_Gazebo.h>
@@ -22,6 +25,9 @@
 #include <SITL/SIM_JSBSim.h>
 #include <SITL/SIM_Tracker.h>
 #include <SITL/SIM_Balloon.h>
+#include <SITL/SIM_FlightAxis.h>
+#include <SITL/SIM_Calibration.h>
+#include <SITL/SIM_XPlane.h>
 
 extern const AP_HAL::HAL& hal;
 
@@ -52,6 +58,7 @@ void SITL_State::_usage(void)
            "\t--uartC device     set device string for UARTC\n"
            "\t--uartD device     set device string for UARTD\n"
            "\t--uartE device     set device string for UARTE\n"
+           "\t--defaults path    set path to defaults file\n"
         );
 }
 
@@ -59,28 +66,54 @@ static const struct {
     const char *name;
     Aircraft *(*constructor)(const char *home_str, const char *frame_str);
 } model_constructors[] = {
+    { "quadplane",          QuadPlane::create },
+    { "xplane",             XPlane::create },
+    { "firefly",            QuadPlane::create },
     { "+",                  MultiCopter::create },
     { "quad",               MultiCopter::create },
     { "copter",             MultiCopter::create },
     { "x",                  MultiCopter::create },
     { "hexa",               MultiCopter::create },
     { "octa",               MultiCopter::create },
+    { "tri",                MultiCopter::create },
+    { "y6",                 MultiCopter::create },
     { "heli",               Helicopter::create },
     { "heli-dual",          Helicopter::create },
     { "heli-compound",      Helicopter::create },
+    { "singlecopter",       SingleCopter::create },
+    { "coaxcopter",         SingleCopter::create },
     { "rover",              SimRover::create },
     { "crrcsim",            CRRCSim::create },
     { "jsbsim",             JSBSim::create },
+    { "flightaxis",         FlightAxis::create },
     { "gazebo",             Gazebo::create },
     { "last_letter",        last_letter::create },
     { "tracker",            Tracker::create },
-    { "balloon",            Balloon::create }
+    { "balloon",            Balloon::create },
+    { "plane",              Plane::create },
+    { "calibration",        Calibration::create },
 };
+
+void SITL_State::_set_signal_handlers(void) const
+{
+    struct sigaction sa_fpe = {};
+
+    sigemptyset(&sa_fpe.sa_mask);
+    sa_fpe.sa_handler = _sig_fpe;
+    sigaction(SIGFPE, &sa_fpe, nullptr);
+
+    struct sigaction sa_pipe = {};
+
+    sigemptyset(&sa_pipe.sa_mask);
+    sa_pipe.sa_handler = SIG_IGN; /* No-op SIGPIPE handler */
+    sigaction(SIGPIPE, &sa_pipe, nullptr);
+}
 
 void SITL_State::_parse_command_line(int argc, char * const argv[])
 {
     int opt;
-    const char *home_str = NULL;
+    // default to CMAC
+    const char *home_str = "-35.363261,149.165230,584,353";
     const char *model_str = NULL;
     char *autotest_dir = NULL;
     float speedup = 1.0f;
@@ -89,9 +122,7 @@ void SITL_State::_parse_command_line(int argc, char * const argv[])
         AP_HAL::panic("out of memory");
     }
 
-    signal(SIGFPE, _sig_fpe);
-    // No-op SIGPIPE handler
-    signal(SIGPIPE, SIG_IGN);
+    _set_signal_handlers();
 
     setvbuf(stdout, (char *)0, _IONBF, 0);
     setvbuf(stderr, (char *)0, _IONBF, 0);
@@ -112,7 +143,10 @@ void SITL_State::_parse_command_line(int argc, char * const argv[])
         CMDLINE_UARTB,
         CMDLINE_UARTC,
         CMDLINE_UARTD,
-        CMDLINE_UARTE
+        CMDLINE_UARTE,
+        CMDLINE_UARTF,
+        CMDLINE_RTSCTS,
+        CMDLINE_DEFAULTS
     };
 
     const struct GetOptLong::option options[] = {
@@ -134,6 +168,8 @@ void SITL_State::_parse_command_line(int argc, char * const argv[])
         {"client",          true,   0, CMDLINE_CLIENT},
         {"gimbal",          false,  0, CMDLINE_GIMBAL},
         {"autotest-dir",    true,   0, CMDLINE_AUTOTESTDIR},
+        {"defaults",        true,   0, CMDLINE_DEFAULTS},
+        {"rtscts",          false,  0, CMDLINE_RTSCTS},
         {0, false, 0, 0}
     };
 
@@ -150,7 +186,7 @@ void SITL_State::_parse_command_line(int argc, char * const argv[])
             _framerate = (unsigned)atoi(gopt.optarg);
             break;
         case 'C':
-            HALSITL::SITLUARTDriver::_console = true;
+            HALSITL::UARTDriver::_console = true;
             break;
         case 'I': {
             _instance = atoi(gopt.optarg);
@@ -172,7 +208,7 @@ void SITL_State::_parse_command_line(int argc, char * const argv[])
             model_str = gopt.optarg;
             break;
         case 's':
-            speedup = atof(gopt.optarg);
+            speedup = strtof(gopt.optarg, NULL);
             break;
         case 'F':
             _fdm_address = gopt.optarg;
@@ -183,8 +219,14 @@ void SITL_State::_parse_command_line(int argc, char * const argv[])
         case CMDLINE_GIMBAL:
             enable_gimbal = true;
             break;
+        case CMDLINE_RTSCTS:
+            _use_rtscts = true;
+            break;
         case CMDLINE_AUTOTESTDIR:
             autotest_dir = strdup(gopt.optarg);
+            break;
+        case CMDLINE_DEFAULTS:
+            defaults_path = strdup(gopt.optarg);
             break;
 
         case CMDLINE_UARTA:
@@ -192,6 +234,7 @@ void SITL_State::_parse_command_line(int argc, char * const argv[])
         case CMDLINE_UARTC:
         case CMDLINE_UARTD:
         case CMDLINE_UARTE:
+        case CMDLINE_UARTF:
             _uart_path[opt - CMDLINE_UARTA] = gopt.optarg;
             break;
             
@@ -201,18 +244,25 @@ void SITL_State::_parse_command_line(int argc, char * const argv[])
         }
     }
 
-    if (model_str && home_str) {
-        for (uint8_t i=0; i < ARRAY_SIZE(model_constructors); i++) {
-            if (strncasecmp(model_constructors[i].name, model_str, strlen(model_constructors[i].name)) == 0) {
-                sitl_model = model_constructors[i].constructor(home_str, model_str);
-                sitl_model->set_speedup(speedup);
-                sitl_model->set_instance(_instance);
-                sitl_model->set_autotest_dir(autotest_dir);
-                _synthetic_clock_mode = true;
-                printf("Started model %s at %s at speed %.1f\n", model_str, home_str, speedup);
-                break;
-            }
+    if (!model_str) {
+        printf("You must specify a vehicle model\n");
+        exit(1);
+    }
+
+    for (uint8_t i=0; i < ARRAY_SIZE(model_constructors); i++) {
+        if (strncasecmp(model_constructors[i].name, model_str, strlen(model_constructors[i].name)) == 0) {
+            sitl_model = model_constructors[i].constructor(home_str, model_str);
+            sitl_model->set_speedup(speedup);
+            sitl_model->set_instance(_instance);
+            sitl_model->set_autotest_dir(autotest_dir);
+            _synthetic_clock_mode = true;
+            printf("Started model %s at %s at speed %.1f\n", model_str, home_str, speedup);
+            break;
         }
+    }
+    if (sitl_model == nullptr) {
+        printf("Vehicle model (%s) not found\n", model_str);
+        exit(1);
     }
 
     fprintf(stdout, "Starting sketch '%s'\n", SKETCH);
@@ -236,7 +286,7 @@ void SITL_State::_parse_command_line(int argc, char * const argv[])
         }
     }
 
-    _sitl_setup();
+    _sitl_setup(home_str);
 }
 
 #endif

@@ -8,10 +8,8 @@ class DataFlash_Class;
 
 namespace SITL {
 
-struct PACKED sitl_fdm {
-    // this is the packet sent by the simulator
-    // to the APM executable to update the simulator state
-    // All values are little-endian
+struct sitl_fdm {
+    // this is the structure passed between FDM models and the main SITL code
     uint64_t timestamp_us;
     double latitude, longitude; // degrees
     double altitude;  // MSL
@@ -21,11 +19,17 @@ struct PACKED sitl_fdm {
     double rollRate, pitchRate, yawRate; // degrees/s/s in body frame
     double rollDeg, pitchDeg, yawDeg;    // euler angles, degrees
     double airspeed; // m/s
-    uint32_t magic; // 0x4c56414f
+    double battery_voltage; // Volts
+    double battery_current; // Amps
+    double rpm1;            // main prop RPM
+    double rpm2;            // secondary RPM
+    uint8_t rcin_chan_count;
+    float  rcin[8];         // RC input 0..1
+    Vector3f bodyMagField;  // Truth XYZ magnetic field vector in body-frame. Includes motor interference. Units are milli-Gauss.
 };
 
 // number of rc output channels
-#define SITL_NUM_CHANNELS 14
+#define SITL_NUM_CHANNELS 16
 
 class SITL {
 public:
@@ -62,11 +66,12 @@ public:
     AP_Float baro_drift;  // in metres per second
     AP_Float baro_glitch; // glitch in meters
     AP_Float gyro_noise;  // in degrees/second
+    AP_Vector3f gyro_scale;  // percentage
     AP_Float accel_noise; // in m/s/s
     AP_Float accel2_noise; // in m/s/s
     AP_Vector3f accel_bias; // in m/s/s
-    AP_Float aspd_noise;  // in m/s
-    AP_Float aspd_fail;   // pitot tube failure
+    AP_Float arspd_noise;  // in m/s
+    AP_Float arspd_fail;   // pitot tube failure
 
     AP_Float mag_noise;   // in mag units (earth field is 818)
     AP_Float mag_error;   // in degrees
@@ -98,8 +103,11 @@ public:
     AP_Int16 flow_rate; // optflow data rate (Hz)
     AP_Int8  flow_delay; // optflow data delay
     AP_Int8  terrain_enable; // enable using terrain for height
+    AP_Int8  pin_mask; // for GPIO emulation
 
     // wind control
+    float wind_speed_active;
+    float wind_direction_active;
     AP_Float wind_speed;
     AP_Float wind_direction;
     AP_Float wind_turbulance;
@@ -108,6 +116,15 @@ public:
     AP_Int16  baro_delay; // barometer data delay in ms
     AP_Int16  mag_delay; // magnetometer data delay in ms
     AP_Int16  wind_delay; // windspeed data delay in ms
+
+    // ADSB related run-time options
+    AP_Int16 adsb_plane_count;
+    AP_Float adsb_radius_m;
+    AP_Float adsb_altitude_m;
+
+    // Earth magnetic field anomaly
+    AP_Vector3f mag_anomaly_ned; // NED anomaly vector at ground level (mGauss)
+    AP_Float mag_anomaly_hgt; // height above ground where anomally strength has decayed to 1/8 of the ground level value (m)
 
     void simstate_send(mavlink_channel_t chan);
 

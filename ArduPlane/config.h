@@ -19,6 +19,7 @@
 //
 // - Try to keep this file organised in the same order as APM_Config.h.example
 //
+#pragma once
 
 #include "defines.h"
 
@@ -26,15 +27,7 @@
 /// DO NOT EDIT THIS INCLUDE - if you want to make a local change, make that
 /// change in your local copy of APM_Config.h.
 ///
-#ifdef USE_CMAKE_APM_CONFIG
- #include "APM_Config_cmake.h" // <== Prefer cmake config if it exists
-#else
- #include "APM_Config.h" // <== THIS INCLUDE, DO NOT EDIT IT. EVER.
-#endif
-///
-/// DO NOT EDIT THIS INCLUDE - if you want to make a local change, make that
-/// change in your local copy of APM_Config.h.
-///
+#include "APM_Config.h"
 
 // Just so that it's completely clear...
 #define ENABLED                 1
@@ -225,6 +218,10 @@
 #endif
 #ifndef ELEVON_CH2_REVERSE
  # define ELEVON_CH2_REVERSE     DISABLED
+#endif
+
+#ifndef DSPOILR_RUD_RATE_DEFAULT
+ #define DSPOILR_RUD_RATE_DEFAULT 100
 #endif
 
 //////////////////////////////////////////////////////////////////////////////
@@ -419,14 +416,4 @@
 // Parachute release
 #ifndef PARACHUTE
 #define PARACHUTE ENABLED
-#endif
-
-/*
-  build a firmware version string.
-  GIT_VERSION comes from Makefile builds
-*/
-#ifndef GIT_VERSION
-#define FIRMWARE_STRING THISFIRMWARE
-#else
-#define FIRMWARE_STRING THISFIRMWARE " (" GIT_VERSION ")"
 #endif

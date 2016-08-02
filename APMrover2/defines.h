@@ -1,15 +1,11 @@
 // -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
-
-#ifndef _DEFINES_H
-#define _DEFINES_H
+#pragma once
 
 // Internal defines, don't edit and expect things to work
 // -------------------------------------------------------
 
 #define TRUE 1
 #define FALSE 0
-#define ToRad(x) radians(x)	// *pi/180
-#define ToDeg(x) degrees(x)	// *180/pi
 
 #define DEBUG 0
 #define SERVO_MAX 4500	// This value represents 45 degrees and is just an arbitrary representation of servo max travel.
@@ -17,7 +13,6 @@
 // active altitude sensor
 // ----------------------
 #define SONAR 0
-#define BARO 1
 
 // CH 7 control
 enum ch7_option {
@@ -90,8 +85,8 @@ enum mode {
 #define MASK_LOG_STEERING  		(1<<13)
 #define MASK_LOG_RC     		(1<<14)
 #define MASK_LOG_ARM_DISARM     (1<<15)
-#define MASK_LOG_WHEN_DISARMED  (1UL<<16)
 #define MASK_LOG_IMU_RAW        (1UL<<19)
+
 
 // Waypoint Modes
 // ----------------
@@ -125,5 +120,3 @@ enum mode {
 
 // convert a boolean (0 or 1) to a sign for multiplying (0 maps to 1, 1 maps to -1)
 #define BOOL_TO_SIGN(bvalue) ((bvalue)?-1:1)
-
-#endif // _DEFINES_H

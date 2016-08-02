@@ -27,7 +27,7 @@ void NavEKF2_core::ResetVelocity(void)
 
     if (PV_AidingMode != AID_ABSOLUTE) {
         stateStruct.velocity.zero();
-    } else if (!gpsNotAvailable) {
+    } else {
         // reset horizontal velocity states to the GPS velocity
         stateStruct.velocity.x  = gpsDataNew.vel.x; // north velocity from blended accel data
         stateStruct.velocity.y  = gpsDataNew.vel.y; // east velocity from blended accel data
@@ -47,6 +47,14 @@ void NavEKF2_core::ResetVelocity(void)
 
     // store the time of the reset
     lastVelReset_ms = imuSampleTime_ms;
+
+    // reset the corresponding covariances
+    zeroRows(P,3,4);
+    zeroCols(P,3,4);
+
+    // set the variances to the measurement variance
+    P[4][4] = P[3][3] = sq(frontend->_gpsHorizVelNoise);
+
 }
 
 // resets position states to last GPS measurement or to zero if in constant position mode
@@ -60,7 +68,7 @@ void NavEKF2_core::ResetPosition(void)
         // reset all position state history to the last known position
         stateStruct.position.x = lastKnownPositionNE.x;
         stateStruct.position.y = lastKnownPositionNE.y;
-    } else if (!gpsNotAvailable) {
+    } else  {
         // write to state vector and compensate for offset  between last GPs measurement and the EKF time horizon
         stateStruct.position.x = gpsDataNew.pos.x  + 0.001f*gpsDataNew.vel.x*(float(imuDataDelayed.time_ms) - float(gpsDataNew.time_ms));
         stateStruct.position.y = gpsDataNew.pos.y  + 0.001f*gpsDataNew.vel.y*(float(imuDataDelayed.time_ms) - float(gpsDataNew.time_ms));
@@ -80,6 +88,14 @@ void NavEKF2_core::ResetPosition(void)
 
     // store the time of the reset
     lastPosReset_ms = imuSampleTime_ms;
+
+    // reset the corresponding covariances
+    zeroRows(P,6,7);
+    zeroCols(P,6,7);
+
+    // set the variances to the measurement variance
+    P[6][6] = P[7][7] = sq(frontend->_gpsHorizPosNoise);
+
 }
 
 // reset the vertical position state using the last height measurement
@@ -94,6 +110,13 @@ void NavEKF2_core::ResetHeight(void)
     outputDataNew.position.z = stateStruct.position.z;
     outputDataDelayed.position.z = stateStruct.position.z;
 
+    // reset the corresponding covariances
+    zeroRows(P,8,8);
+    zeroCols(P,8,8);
+
+    // set the variances to the measurement variance
+    P[8][8] = posDownObsNoise;
+
     // Reset the vertical velocity state using GPS vertical velocity if we are airborne
     // Check that GPS vertical velocity data is available and can be used
     if (inFlight && !gpsNotAvailable && frontend->_fusionModeGPS == 0) {
@@ -106,6 +129,14 @@ void NavEKF2_core::ResetHeight(void)
     }
     outputDataNew.velocity.z = stateStruct.velocity.z;
     outputDataDelayed.velocity.z = stateStruct.velocity.z;
+
+    // reset the corresponding covariances
+    zeroRows(P,5,5);
+    zeroCols(P,5,5);
+
+    // set the variances to the measurement variance
+    P[5][5] = sq(frontend->_gpsVertVelNoise);
+
 }
 
 // Reset the baro so that it reads zero at the current height
@@ -150,8 +181,7 @@ void NavEKF2_core::SelectVelPosFusion()
 
     // read GPS data from the sensor and check for new data in the buffer
     readGpsData();
-    gpsDataToFuse = RecallGPS();
-
+    gpsDataToFuse = storedGPS.recall(gpsDataDelayed,imuDataDelayed.time_ms);
     // Determine if we need to fuse position and velocity data on this time step
     if (gpsDataToFuse && PV_AidingMode == AID_ABSOLUTE) {
         // Don't fuse velocity data if GPS doesn't support it
@@ -166,24 +196,24 @@ void NavEKF2_core::SelectVelPosFusion()
         fusePosData = false;
     }
 
+    // we have GPS data to fuse and a request to align the yaw using the GPS course
+    if (gpsYawResetRequest) {
+        realignYawGPS();
+    }
+
     // Select height data to be fused from the available baro, range finder and GPS sources
     selectHeightForFusion();
 
-    // If we are operating without any aiding, fuse in the last known position and zero velocity
+    // If we are operating without any aiding, fuse in the last known position
     // to constrain tilt drift. This assumes a non-manoeuvring vehicle
     // Do this to coincide with the height fusion
     if (fuseHgtData && PV_AidingMode == AID_NONE) {
         gpsDataDelayed.vel.zero();
         gpsDataDelayed.pos.x = lastKnownPositionNE.x;
         gpsDataDelayed.pos.y = lastKnownPositionNE.y;
-        // only fuse synthetic measurements when rate of change of velocity is less than 1g to reduce attitude errors due to launch acceleration
-        if (accNavMag < 9.8f) {
-            fusePosData = true;
-            fuseVelData = true;
-        } else {
-            fusePosData = false;
-            fuseVelData = false;
-        }
+
+        fusePosData = true;
+        fuseVelData = false;
     }
 
     // perform fusion
@@ -216,7 +246,6 @@ void NavEKF2_core::FuseVelPosNED()
     uint8_t obsIndex;
 
     // declare variables used by state and covariance update calculations
-    float posErr;
     Vector6 R_OBS; // Measurement variances used for fusion
     Vector6 R_OBS_DATA_CHECKS; // Measurement variances used for data checks only
     Vector6 observation;
@@ -243,24 +272,26 @@ void NavEKF2_core::FuseVelPosNED()
         observation[5] = -hgtMea;
 
         // calculate additional error in GPS position caused by manoeuvring
-        posErr = frontend->gpsPosVarAccScale * accNavMag;
+        float posErr = frontend->gpsPosVarAccScale * accNavMag;
 
         // estimate the GPS Velocity, GPS horiz position and height measurement variances.
-        // if the GPS is able to report a speed error, we use it to adjust the observation noise for GPS velocity
-        // otherwise we scale it using manoeuvre acceleration
-        // Use different errors if flying without GPS using synthetic position and velocity data
-        if (PV_AidingMode == AID_NONE && inFlight) {
-            // Assume the vehicle will be flown with velocity changes less than 10 m/s in this mode (realistic for indoor use)
-            // This is a compromise between corrections for gyro errors and reducing angular errors due to maneouvres
-            R_OBS[0] = sq(10.0f);
+        // Use different errors if operating without external aiding using an assumed position or velocity of zero
+        if (PV_AidingMode == AID_NONE) {
+            if (tiltAlignComplete && motorsArmed) {
+            // This is a compromise between corrections for gyro errors and reducing effect of manoeuvre accelerations on tilt estimate
+                R_OBS[0] = sq(constrain_float(frontend->_noaidHorizNoise, 0.5f, 50.0f));
+            } else {
+                // Use a smaller value to give faster initial alignment
+                R_OBS[0] = sq(0.5f);
+            }
             R_OBS[1] = R_OBS[0];
             R_OBS[2] = R_OBS[0];
-            // Assume a large position uncertainty so as to contrain position states in this mode but minimise angular errors due to manoeuvres
-            R_OBS[3] = sq(25.0f);
-            R_OBS[4] = R_OBS[3];
+            R_OBS[3] = R_OBS[0];
+            R_OBS[4] = R_OBS[0];
+            for (uint8_t i=0; i<=2; i++) R_OBS_DATA_CHECKS[i] = R_OBS[i];
         } else {
             if (gpsSpdAccuracy > 0.0f) {
-                // use GPS receivers reported speed accuracy if available and floor at value set by gps noise parameter
+                // use GPS receivers reported speed accuracy if available and floor at value set by GPS velocity noise parameter
                 R_OBS[0] = sq(constrain_float(gpsSpdAccuracy, frontend->_gpsHorizVelNoise, 50.0f));
                 R_OBS[2] = sq(constrain_float(gpsSpdAccuracy, frontend->_gpsVertVelNoise, 50.0f));
             } else {
@@ -269,18 +300,22 @@ void NavEKF2_core::FuseVelPosNED()
                 R_OBS[2] = sq(constrain_float(frontend->_gpsVertVelNoise,  0.05f, 5.0f)) + sq(frontend->gpsDVelVarAccScale  * accNavMag);
             }
             R_OBS[1] = R_OBS[0];
-            R_OBS[3] = sq(constrain_float(frontend->_gpsHorizPosNoise, 0.1f, 10.0f)) + sq(posErr);
+            // Use GPS reported position accuracy if available and floor at value set by GPS position noise parameter
+            if (gpsPosAccuracy > 0.0f) {
+                R_OBS[3] = sq(constrain_float(gpsPosAccuracy, frontend->_gpsHorizPosNoise, 100.0f));
+            } else {
+                R_OBS[3] = sq(constrain_float(frontend->_gpsHorizPosNoise, 0.1f, 10.0f)) + sq(posErr);
+            }
             R_OBS[4] = R_OBS[3];
+            // For data integrity checks we use the same measurement variances as used to calculate the Kalman gains for all measurements except GPS horizontal velocity
+            // For horizontal GPs velocity we don't want the acceptance radius to increase with reported GPS accuracy so we use a value based on best GPs perfomrance
+            // plus a margin for manoeuvres. It is better to reject GPS horizontal velocity errors early
+            for (uint8_t i=0; i<=2; i++) R_OBS_DATA_CHECKS[i] = sq(constrain_float(frontend->_gpsHorizVelNoise, 0.05f, 5.0f)) + sq(frontend->gpsNEVelVarAccScale * accNavMag);
         }
         R_OBS[5] = posDownObsNoise;
+        for (uint8_t i=3; i<=5; i++) R_OBS_DATA_CHECKS[i] = R_OBS[i];
 
-        // For data integrity checks we use the same measurement variances as used to calculate the Kalman gains for all measurements except GPS horizontal velocity
-        // For horizontal GPs velocity we don't want the acceptance radius to increase with reported GPS accuracy so we use a value based on best GPs perfomrance
-        // plus a margin for manoeuvres. It is better to reject GPS horizontal velocity errors early
-        for (uint8_t i=0; i<=1; i++) R_OBS_DATA_CHECKS[i] = sq(constrain_float(frontend->_gpsHorizVelNoise, 0.05f, 5.0f)) + sq(frontend->gpsNEVelVarAccScale * accNavMag);
-        for (uint8_t i=2; i<=5; i++) R_OBS_DATA_CHECKS[i] = R_OBS[i];
-
-        // if vertical GPS velocity data and an independant height source is being used, check to see if the GPS vertical velocity and altimeter
+        // if vertical GPS velocity data and an independent height source is being used, check to see if the GPS vertical velocity and altimeter
         // innovations have the same sign and are outside limits. If so, then it is likely aliasing is affecting
         // the accelerometers and we should disable the GPS and barometer innovation consistency checks.
         if (useGpsVertVel && fuseVelData && (frontend->_altSource != 2)) {
@@ -304,35 +339,35 @@ void NavEKF2_core::FuseVelPosNED()
             varInnovVelPos[3] = P[6][6] + R_OBS_DATA_CHECKS[3];
             varInnovVelPos[4] = P[7][7] + R_OBS_DATA_CHECKS[4];
             // apply an innovation consistency threshold test, but don't fail if bad IMU data
-            float maxPosInnov2 = sq(max(0.01f * (float)frontend->_gpsPosInnovGate, 1.0f))*(varInnovVelPos[3] + varInnovVelPos[4]);
+            float maxPosInnov2 = sq(MAX(0.01f * (float)frontend->_gpsPosInnovGate, 1.0f))*(varInnovVelPos[3] + varInnovVelPos[4]);
             posTestRatio = (sq(innovVelPos[3]) + sq(innovVelPos[4])) / maxPosInnov2;
             posHealth = ((posTestRatio < 1.0f) || badIMUdata);
             // declare a timeout condition if we have been too long without data or not aiding
             posTimeout = (((imuSampleTime_ms - lastPosPassTime_ms) > gpsRetryTime) || PV_AidingMode == AID_NONE);
-            // use position data if healthy, timed out, or in constant position mode
-            if (posHealth || posTimeout || (PV_AidingMode == AID_NONE)) {
+            // use position data if healthy or timed out
+            if (PV_AidingMode == AID_NONE) {
                 posHealth = true;
-                // only reset the failed time and do glitch timeout checks if we are doing full aiding
-                if (PV_AidingMode == AID_ABSOLUTE) {
-                    lastPosPassTime_ms = imuSampleTime_ms;
-                    // if timed out or outside the specified uncertainty radius, reset to the GPS
-                    if (posTimeout || ((P[6][6] + P[7][7]) > sq(float(frontend->_gpsGlitchRadiusMax)))) {
-                        // reset the position to the current GPS position
-                        ResetPosition();
-                        // reset the velocity to the GPS velocity
-                        ResetVelocity();
-                        // don't fuse GPS data on this time step
-                        fusePosData = false;
-                        fuseVelData = false;
-                        // Reset the position variances and corresponding covariances to a value that will pass the checks
-                        zeroRows(P,6,7);
-                        zeroCols(P,6,7);
-                        P[6][6] = sq(float(0.5f*frontend->_gpsGlitchRadiusMax));
-                        P[7][7] = P[6][6];
-                        // Reset the normalised innovation to avoid failing the bad fusion tests
-                        posTestRatio = 0.0f;
-                        velTestRatio = 0.0f;
-                    }
+                lastPosPassTime_ms = imuSampleTime_ms;
+            } else if (posHealth || posTimeout) {
+                posHealth = true;
+                lastPosPassTime_ms = imuSampleTime_ms;
+                // if timed out or outside the specified uncertainty radius, reset to the GPS
+                if (posTimeout || ((P[6][6] + P[7][7]) > sq(float(frontend->_gpsGlitchRadiusMax)))) {
+                    // reset the position to the current GPS position
+                    ResetPosition();
+                    // reset the velocity to the GPS velocity
+                    ResetVelocity();
+                    // don't fuse GPS data on this time step
+                    fusePosData = false;
+                    fuseVelData = false;
+                    // Reset the position variances and corresponding covariances to a value that will pass the checks
+                    zeroRows(P,6,7);
+                    zeroCols(P,6,7);
+                    P[6][6] = sq(float(0.5f*frontend->_gpsGlitchRadiusMax));
+                    P[7][7] = P[6][6];
+                    // Reset the normalised innovation to avoid failing the bad fusion tests
+                    posTestRatio = 0.0f;
+                    velTestRatio = 0.0f;
                 }
             } else {
                 posHealth = false;
@@ -362,7 +397,7 @@ void NavEKF2_core::FuseVelPosNED()
             }
             // apply an innovation consistency threshold test, but don't fail if bad IMU data
             // calculate the test ratio
-            velTestRatio = innovVelSumSq / (varVelSum * sq(max(0.01f * (float)frontend->_gpsVelInnovGate, 1.0f)));
+            velTestRatio = innovVelSumSq / (varVelSum * sq(MAX(0.01f * (float)frontend->_gpsVelInnovGate, 1.0f)));
             // fail if the ratio is greater than 1
             velHealth = ((velTestRatio < 1.0f)  || badIMUdata);
             // declare a timeout if we have not fused velocity data for too long or not aiding
@@ -392,7 +427,7 @@ void NavEKF2_core::FuseVelPosNED()
             innovVelPos[5] = stateStruct.position.z - observation[5];
             varInnovVelPos[5] = P[8][8] + R_OBS_DATA_CHECKS[5];
             // calculate the innovation consistency test ratio
-            hgtTestRatio = sq(innovVelPos[5]) / (sq(max(0.01f * (float)frontend->_hgtInnovGate, 1.0f)) * varInnovVelPos[5]);
+            hgtTestRatio = sq(innovVelPos[5]) / (sq(MAX(0.01f * (float)frontend->_hgtInnovGate, 1.0f)) * varInnovVelPos[5]);
             // fail if the ratio is > 1, but don't fail if bad IMU data
             hgtHealth = ((hgtTestRatio < 1.0f) || badIMUdata);
             // Fuse height data if healthy or timed out or in constant position mode
@@ -497,24 +532,6 @@ void NavEKF2_core::FuseVelPosNED()
                     Kfusion[23] = 0.0f;
                 }
 
-                // zero the attitude error state - by definition it is assumed to be zero before each observaton fusion
-                stateStruct.angErr.zero();
-
-                // calculate state corrections and re-normalise the quaternions for states predicted using the blended IMU data
-                for (uint8_t i = 0; i<=stateIndexLim; i++) {
-                    statesArray[i] = statesArray[i] - Kfusion[i] * innovVelPos[obsIndex];
-                }
-
-                // the first 3 states represent the angular misalignment vector. This is
-                // is used to correct the estimated quaternion
-                stateStruct.quat.rotate(stateStruct.angErr);
-
-                // sum the attitude error from velocity and position fusion only
-                // used as a metric for convergence monitoring
-                if (obsIndex != 5) {
-                    tiltErrVec += stateStruct.angErr;
-                }
-
                 // update the covariance - take advantage of direct observation of a single state at index = stateIndex to reduce computations
                 // this is a numerically optimised implementation of standard equation P = (I - K*H)*P;
                 for (uint8_t i= 0; i<=stateIndexLim; i++) {
@@ -523,18 +540,76 @@ void NavEKF2_core::FuseVelPosNED()
                         KHP[i][j] = Kfusion[i] * P[stateIndex][j];
                     }
                 }
+                // Check that we are not going to drive any variances negative and skip the update if so
+                bool healthyFusion = true;
                 for (uint8_t i= 0; i<=stateIndexLim; i++) {
-                    for (uint8_t j= 0; j<=stateIndexLim; j++) {
-                        P[i][j] = P[i][j] - KHP[i][j];
+                    if (KHP[i][i] > P[i][i]) {
+                        healthyFusion = false;
+                    }
+                }
+                if (healthyFusion) {
+                    // update the covariance matrix
+                    for (uint8_t i= 0; i<=stateIndexLim; i++) {
+                        for (uint8_t j= 0; j<=stateIndexLim; j++) {
+                            P[i][j] = P[i][j] - KHP[i][j];
+                        }
+                    }
+
+                    // force the covariance matrix to be symmetrical and limit the variances to prevent ill-condiioning.
+                    ForceSymmetry();
+                    ConstrainVariances();
+
+                    // update the states
+                    // zero the attitude error state - by definition it is assumed to be zero before each observaton fusion
+                    stateStruct.angErr.zero();
+
+                    // calculate state corrections and re-normalise the quaternions for states predicted using the blended IMU data
+                    for (uint8_t i = 0; i<=stateIndexLim; i++) {
+                        statesArray[i] = statesArray[i] - Kfusion[i] * innovVelPos[obsIndex];
+                    }
+
+                    // the first 3 states represent the angular misalignment vector. This is
+                    // is used to correct the estimated quaternion
+                    stateStruct.quat.rotate(stateStruct.angErr);
+
+                    // sum the attitude error from velocity and position fusion only
+                    // used as a metric for convergence monitoring
+                    if (obsIndex != 5) {
+                        tiltErrVec += stateStruct.angErr;
+                    }
+                    // record good fusion status
+                    if (obsIndex == 0) {
+                        faultStatus.bad_nvel = false;
+                    } else if (obsIndex == 1) {
+                        faultStatus.bad_evel = false;
+                    } else if (obsIndex == 2) {
+                        faultStatus.bad_dvel = false;
+                    } else if (obsIndex == 3) {
+                        faultStatus.bad_npos = false;
+                    } else if (obsIndex == 4) {
+                        faultStatus.bad_epos = false;
+                    } else if (obsIndex == 5) {
+                        faultStatus.bad_dpos = false;
+                    }
+                } else {
+                    // record bad fusion status
+                    if (obsIndex == 0) {
+                        faultStatus.bad_nvel = true;
+                    } else if (obsIndex == 1) {
+                        faultStatus.bad_evel = true;
+                    } else if (obsIndex == 2) {
+                        faultStatus.bad_dvel = true;
+                    } else if (obsIndex == 3) {
+                        faultStatus.bad_npos = true;
+                    } else if (obsIndex == 4) {
+                        faultStatus.bad_epos = true;
+                    } else if (obsIndex == 5) {
+                        faultStatus.bad_dpos = true;
                     }
                 }
             }
         }
     }
-
-    // force the covariance matrix to be symmetrical and limit the variances to prevent ill-condiioning.
-    ForceSymmetry();
-    ConstrainVariances();
 
     // stop performance timer
     hal.util->perf_end(_perf_FuseVelPosNED);
@@ -550,15 +625,15 @@ void NavEKF2_core::selectHeightForFusion()
     // Read range finder data and check for new data in the buffer
     // This data is used by both height and optical flow fusion processing
     readRangeFinder();
-    rangeDataToFuse = RecallRange();
+    rangeDataToFuse = storedRange.recall(rangeDataDelayed,imuDataDelayed.time_ms);
 
     // read baro height data from the sensor and check for new data in the buffer
     readBaroData();
-    baroDataToFuse = RecallBaro();
+    baroDataToFuse = storedBaro.recall(baroDataDelayed, imuDataDelayed.time_ms);
 
     // determine if we should be using a height source other than baro
     bool usingRangeForHgt = (frontend->_altSource == 1 && imuSampleTime_ms - rngValidMeaTime_ms < 500 && frontend->_fusionModeGPS == 3);
-    bool usingGpsForHgt = (frontend->_altSource == 2 && imuSampleTime_ms - lastTimeGpsReceived_ms < 500 && validOrigin);
+    bool usingGpsForHgt = (frontend->_altSource == 2 && imuSampleTime_ms - lastTimeGpsReceived_ms < 500 && validOrigin && gpsAccuracyGood);
 
     // if there is new baro data to fuse, calculate filterred baro data required by other processes
     if (baroDataToFuse) {
@@ -581,7 +656,7 @@ void NavEKF2_core::selectHeightForFusion()
         // using range finder data
         // correct for tilt using a flat earth model
         if (prevTnb.c.z >= 0.7) {
-            hgtMea  = max(rangeDataDelayed.rng * prevTnb.c.z, rngOnGnd);
+            hgtMea  = MAX(rangeDataDelayed.rng * prevTnb.c.z, rngOnGnd);
             // enable fusion
             fuseHgtData = true;
             // set the observation noise
@@ -595,7 +670,7 @@ void NavEKF2_core::selectHeightForFusion()
         hgtMea = gpsDataDelayed.hgt;
         // enable fusion
         fuseHgtData = true;
-        // set the observation noise to the horizontal GPS noise plus a scaler becasue GPS vertical position is usually less accurate
+        // set the observation noise to the horizontal GPS noise plus a scaler because GPS vertical position is usually less accurate
         // TODO use VDOP/HDOP, reported accuracy or a separate parameter
         posDownObsNoise = sq(constrain_float(frontend->_gpsHorizPosNoise * 1.5f, 0.1f, 10.0f));
     } else if (baroDataToFuse && !usingRangeForHgt && !usingGpsForHgt) {
@@ -608,6 +683,11 @@ void NavEKF2_core::selectHeightForFusion()
         // reduce weighting (increase observation noise) on baro if we are likely to be in ground effect
         if (getTakeoffExpected() || getTouchdownExpected()) {
             posDownObsNoise *= frontend->gndEffectBaroScaler;
+        }
+        // If we are in takeoff mode, the height measurement is limited to be no less than the measurement at start of takeoff
+        // This prevents negative baro disturbances due to copter downwash corrupting the EKF altitude during initial ascent
+        if (motorsArmed && getTakeoffExpected()) {
+            hgtMea = MAX(hgtMea, meaHgtAtTakeOff);
         }
     } else {
         fuseHgtData = false;

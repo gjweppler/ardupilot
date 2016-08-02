@@ -4,8 +4,11 @@
 #
 SYSTYPE			:=	$(shell uname)
 
-GIT_VERSION := $(shell git rev-parse HEAD | cut -c1-8)
+GIT_VERSION ?= $(shell git rev-parse HEAD | cut -c1-8)
 EXTRAFLAGS += -DGIT_VERSION="\"$(GIT_VERSION)\""
+
+# Add missing parts from libc and libstdc++ for all boards
+EXTRAFLAGS += -I$(SKETCHBOOK)/libraries/AP_Common/missing
 
 # force LANG to C so awk works sanely on MacOS
 export LANG=C
@@ -117,6 +120,16 @@ ifneq ($(findstring CYGWIN, $(SYSTYPE)),)
   endif
 endif
 
+ifneq ($(findstring mavlink1, $(MAKECMDGOALS)),)
+EXTRAFLAGS += -DMAVLINK_PROTOCOL_VERSION=1
+MAVLINK_SUBDIR=v1.0
+MAVLINK_WIRE_PROTOCOL=1.0
+else
+EXTRAFLAGS += -DMAVLINK_PROTOCOL_VERSION=2
+MAVLINK_SUBDIR=v2.0
+MAVLINK_WIRE_PROTOCOL=2.0
+endif
+
 ifneq ($(APPDIR),)
 # this is a recusive PX4 build
 HAL_BOARD = HAL_BOARD_PX4
@@ -198,12 +211,33 @@ HAL_BOARD = HAL_BOARD_VRBRAIN
 HAL_BOARD_SUBTYPE = HAL_BOARD_SUBTYPE_NONE
 endif
 
-ifneq ($(findstring flymaple, $(MAKECMDGOALS)),)
-HAL_BOARD = HAL_BOARD_FLYMAPLE
+ifneq ($(findstring bhat, $(MAKECMDGOALS)),)
+HAL_BOARD = HAL_BOARD_LINUX
+HAL_BOARD_SUBTYPE = HAL_BOARD_SUBTYPE_LINUX_BH
+endif
+
+ifneq ($(findstring qflight, $(MAKECMDGOALS)),)
+HAL_BOARD = HAL_BOARD_LINUX
+HAL_BOARD_SUBTYPE = HAL_BOARD_SUBTYPE_LINUX_QFLIGHT
+endif
+
+ifneq ($(findstring qurt, $(MAKECMDGOALS)),)
+HAL_BOARD = HAL_BOARD_QURT
+HAL_BOARD_SUBTYPE = HAL_BOARD_SUBTYPE_NONE
+endif
+
+ifneq ($(findstring pxfmini, $(MAKECMDGOALS)),)
+HAL_BOARD = HAL_BOARD_LINUX
+HAL_BOARD_SUBTYPE = HAL_BOARD_SUBTYPE_LINUX_PXFMINI
 endif
 
 # default to SITL
 ifeq ($(HAL_BOARD),)
 HAL_BOARD = HAL_BOARD_SITL
 HAL_BOARD_SUBTYPE = HAL_BOARD_SUBTYPE_NONE
+endif
+
+ifneq ($(findstring navio2, $(MAKECMDGOALS)),)
+HAL_BOARD = HAL_BOARD_LINUX
+HAL_BOARD_SUBTYPE = HAL_BOARD_SUBTYPE_LINUX_NAVIO2
 endif

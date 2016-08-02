@@ -8,6 +8,7 @@
 #include "AP_NavEKF2_core.h"
 #include <AP_AHRS/AP_AHRS.h>
 #include <AP_Vehicle/AP_Vehicle.h>
+#include <GCS_MAVLink/GCS.h>
 
 #include <stdio.h>
 
@@ -23,6 +24,12 @@ extern const AP_HAL::HAL& hal;
 */
 bool NavEKF2_core::calcGpsGoodToAlign(void)
 {
+    if (inFlight && assume_zero_sideslip() && !use_compass()) {
+        // this is a special case where a plane has launched without magnetometer
+        // is now in the air and needs to align yaw to the GPS and start navigating as soon as possible
+        return true;
+    }
+
     // User defined multiplier to be applied to check thresholds
     float checkScaler = 0.01f*(float)frontend->_gpsCheckScaler;
 
@@ -31,11 +38,9 @@ bool NavEKF2_core::calcGpsGoodToAlign(void)
     if ((magTestRatio.x <= 1.0f && magTestRatio.y <= 1.0f && yawTestRatio <= 1.0f) || !consistentMagData) {
         magYawResetTimer_ms = imuSampleTime_ms;
     }
-    if (imuSampleTime_ms - magYawResetTimer_ms > 5000) {
-        // reset heading and field states
-        Vector3f eulerAngles;
-        getEulerAngles(eulerAngles);
-        stateStruct.quat = calcQuatAndFieldStates(eulerAngles.x, eulerAngles.y);
+    if ((imuSampleTime_ms - magYawResetTimer_ms > 5000) && !motorsArmed) {
+        // request reset of heading and magnetic field states
+        magYawResetRequest = true;
         // reset timer to ensure that bad magnetometer data cannot cause a heading reset more often than every 5 seconds
         magYawResetTimer_ms = imuSampleTime_ms;
     }
@@ -53,7 +58,7 @@ bool NavEKF2_core::calcGpsGoodToAlign(void)
     // Decay distance moved exponentially to zero
     gpsDriftNE *= (1.0f - deltaTime/posFiltTimeConst);
     // Clamp the fiter state to prevent excessive persistence of large transients
-    gpsDriftNE = min(gpsDriftNE,10.0f);
+    gpsDriftNE = MIN(gpsDriftNE,10.0f);
     // Fail if more than 3 metres drift after filtering whilst on-ground
     // This corresponds to a maximum acceptable average drift rate of 0.3 m/s or single glitch event of 3m
     bool gpsDriftFail = (gpsDriftNE > 3.0f*checkScaler) && onGround && (frontend->_gpsCheck & MASK_GPS_POS_DRIFT);
@@ -78,6 +83,13 @@ bool NavEKF2_core::calcGpsGoodToAlign(void)
     } else if ((frontend->_fusionModeGPS == 0) && !_ahrs->get_gps().have_vertical_velocity()) {
         // If the EKF settings require vertical GPS velocity and the receiver is not outputting it, then fail
         gpsVertVelFail = true;
+        // if we have a 3D fix with no vertical velocity and
+        // EK2_GPS_TYPE=0 then change it to 1. It means the GPS is not
+        // capable of giving a vertical velocity
+        if (_ahrs->get_gps().status() >= AP_GPS::GPS_OK_FIX_3D) {
+            frontend->_fusionModeGPS.set(1);
+            GCS_MAVLINK::send_statustext_all(MAV_SEVERITY_WARNING, "EK2: Changed EK2_GPS_TYPE to 1");
+        }
     } else {
         gpsVertVelFail = false;
     }
@@ -96,7 +108,7 @@ bool NavEKF2_core::calcGpsGoodToAlign(void)
     // This check can only be used if the vehicle is stationary
     bool gpsHorizVelFail;
     if (onGround) {
-        gpsHorizVelFilt = 0.1f * pythagorous2(gpsDataDelayed.vel.x,gpsDataDelayed.vel.y) + 0.9f * gpsHorizVelFilt;
+        gpsHorizVelFilt = 0.1f * norm(gpsDataDelayed.vel.x,gpsDataDelayed.vel.y) + 0.9f * gpsHorizVelFilt;
         gpsHorizVelFilt = constrain_float(gpsHorizVelFilt,-10.0f,10.0f);
         gpsHorizVelFail = (fabsf(gpsHorizVelFilt) > 0.3f*checkScaler) && (frontend->_gpsCheck & MASK_GPS_HORIZ_SPD);
     } else {
@@ -172,7 +184,7 @@ bool NavEKF2_core::calcGpsGoodToAlign(void)
     // fail if magnetometer innovations are outside limits indicating bad yaw
     // with bad yaw we are unable to use GPS
     bool yawFail;
-    if ((magTestRatio.x > 1.0f || magTestRatio.y > 1.0f) && (frontend->_gpsCheck & MASK_GPS_YAW_ERR)) {
+    if ((magTestRatio.x > 1.0f || magTestRatio.y > 1.0f || yawTestRatio > 1.0f) && (frontend->_gpsCheck & MASK_GPS_YAW_ERR)) {
         yawFail = true;
     } else {
         yawFail = false;
@@ -233,7 +245,7 @@ void NavEKF2_core::calcGpsGoodForFlight(void)
     sAccFilterState1 = constrain_float((alpha1 * gpsSpdAccRaw + (1.0f - alpha1) * sAccFilterState1),0.0f,10.0f);
 
     // apply a peak hold filter to the LPF output
-    sAccFilterState2 = max(sAccFilterState1,((1.0f - alpha2) * sAccFilterState2));
+    sAccFilterState2 = MAX(sAccFilterState1,((1.0f - alpha2) * sAccFilterState2));
 
     // Apply a threshold test with hysteresis to the filtered GPS speed accuracy data
     if (sAccFilterState2 > 1.5f ) {
@@ -348,11 +360,18 @@ void NavEKF2_core::detectFlight()
     prevInFlight = inFlight;
 
     // Store vehicle height and range prior to takeoff for use in post takeoff checks
-    if (onGround && prevOnGround) {
+    if (onGround) {
         // store vertical position at start of flight to use as a reference for ground relative checks
         posDownAtTakeoff = stateStruct.position.z;
         // store the range finder measurement which will be used as a reference to detect when we have taken off
         rngAtStartOfFlight = rangeDataNew.rng;
+        // if the magnetic field states have been set, then continue to update the vertical position
+        // quaternion and yaw innovation snapshots to use as a reference when we start to fly.
+        if (magStateInitComplete) {
+            posDownAtLastMagReset = stateStruct.position.z;
+            quatAtLastMagReset = stateStruct.quat;
+            yawInnovAtLastMagReset = innovYaw;
+        }
     }
 
 }

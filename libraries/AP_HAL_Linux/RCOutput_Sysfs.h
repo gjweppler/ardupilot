@@ -3,9 +3,11 @@
 #include "AP_HAL_Linux.h"
 #include "PWM_Sysfs.h"
 
-class Linux::RCOutput_Sysfs : public AP_HAL::RCOutput {
+namespace Linux {
+
+class RCOutput_Sysfs : public AP_HAL::RCOutput {
 public:
-    RCOutput_Sysfs(uint8_t chip, uint8_t channel_count);
+    RCOutput_Sysfs(uint8_t chip, uint8_t channel_base, uint8_t channel_count);
     ~RCOutput_Sysfs();
 
     static RCOutput_Sysfs *from(AP_HAL::RCOutput *rcoutput)
@@ -13,7 +15,7 @@ public:
         return static_cast<RCOutput_Sysfs *>(rcoutput);
     }
 
-    void init(void *machtnichts);
+    void init();
     void set_freq(uint32_t chmask, uint16_t freq_hz);
     uint16_t get_freq(uint8_t ch);
     void enable_ch(uint8_t ch);
@@ -24,6 +26,9 @@ public:
 
 private:
     const uint8_t _chip;
+    const uint8_t _channel_base;
     const uint8_t _channel_count;
-    PWM_Sysfs **_pwm_channels;
+    PWM_Sysfs_Base **_pwm_channels;
 };
+
+}

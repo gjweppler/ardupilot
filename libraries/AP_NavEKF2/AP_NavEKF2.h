@@ -18,9 +18,7 @@
   You should have received a copy of the GNU General Public License
   along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-
-#ifndef AP_NavEKF2_Tuning
-#define AP_NavEKF2_Tuning
+#pragma once
 
 #include <AP_Math/AP_Math.h>
 #include <AP_Param/AP_Param.h>
@@ -54,6 +52,9 @@ public:
     // Update Filter States - this should be called whenever new IMU data is available
     void UpdateFilter(void);
 
+    // check if we should write log messages
+    void check_log_write(void);
+    
     // Check basic filter health metrics and return a consolidated health status
     bool healthy(void) const;
 
@@ -61,11 +62,17 @@ public:
     // return -1 if no primary core selected
     int8_t getPrimaryCoreIndex(void) const;
 
-    // Return the last calculated NED position relative to the reference point (m) for the specified instance.
+    // Write the last calculated NE position relative to the reference point (m) for the specified instance.
     // An out of range instance (eg -1) returns data for the the primary instance
     // If a calculated solution is not available, use the best available data and return false
     // If false returned, do not use for flight control
-    bool getPosNED(int8_t instance, Vector3f &pos);
+    bool getPosNE(int8_t instance, Vector2f &posNE);
+
+    // Write the last calculated D position relative to the reference point (m) for the specified instance.
+    // An out of range instance (eg -1) returns data for the the primary instance
+    // If a calculated solution is not available, use the best available data and return false
+    // If false returned, do not use for flight control
+    bool getPosD(int8_t instance, float &posD);
 
     // return NED velocity in m/s for the specified instance
     // An out of range instance (eg -1) returns data for the the primary instance
@@ -136,7 +143,7 @@ public:
 
     // Return estimated magnetometer offsets
     // Return true if magnetometer offsets are valid
-    bool getMagOffsets(Vector3f &magOffsets) const;
+    bool getMagOffsets(uint8_t mag_idx, Vector3f &magOffsets) const;
 
     // Return the last calculated latitude, longitude and height in WGS-84
     // If a calculated location isn't available, return a raw GPS measurement
@@ -172,6 +179,9 @@ public:
     // return the innovations for the specified instance
     // An out of range instance (eg -1) returns data for the the primary instance
     void  getInnovations(int8_t index, Vector3f &velInnov, Vector3f &posInnov, Vector3f &magInnov, float &tasInnov, float &yawInnov);
+
+    // publish output observer angular, velocity and position tracking error
+    void getOutputTrackingError(int8_t instance, Vector3f &error) const;
 
     // return the innovation consistency test ratios for the specified instance
     // An out of range instance (eg -1) returns data for the the primary instance
@@ -213,7 +223,7 @@ public:
      7 = badly conditioned synthetic sideslip fusion
      7 = filter is not initialised
     */
-    void  getFilterFaults(int8_t instance, uint8_t &faults);
+    void  getFilterFaults(int8_t instance, uint16_t &faults);
 
     /*
     return filter timeout status as a bitmasked integer for the specified instance
@@ -266,6 +276,9 @@ public:
 
     // allow the enable flag to be set by Replay
     void set_enable(bool enable) { _enable.set(enable); }
+
+    // are we doing sensor logging inside the EKF?
+    bool have_ekf_logging(void) const { return logging.enabled && _logging_mask != 0; }
     
 private:
     uint8_t num_cores; // number of allocated cores
@@ -285,7 +298,8 @@ private:
     AP_Float _easNoise;             // equivalent airspeed measurement noise : m/s
     AP_Float _windVelProcessNoise;  // wind velocity state process noise : m/s^2
     AP_Float _wndVarHgtRateScale;   // scale factor applied to wind process noise due to height rate
-    AP_Float _magProcessNoise;      // magnetic field process noise : gauss/sec
+    AP_Float _magEarthProcessNoise; // Earth magnetic field process noise : gauss/sec
+    AP_Float _magBodyProcessNoise;  // Body magnetic field process noise : gauss/sec
     AP_Float _gyrNoise;             // gyro process noise : rad/s
     AP_Float _accNoise;             // accelerometer process noise : m/s^2
     AP_Float _gyroBiasProcessNoise; // gyro bias state process noise : rad/s
@@ -311,6 +325,11 @@ private:
     AP_Int8 _gpsCheck;              // Bitmask controlling which preflight GPS checks are bypassed
     AP_Int8 _imuMask;               // Bitmask of IMUs to instantiate EKF2 for
     AP_Int16 _gpsCheckScaler;       // Percentage increase to be applied to GPS pre-flight accuracy and drift thresholds
+    AP_Float _noaidHorizNoise;      // horizontal position measurement noise assumed when synthesised zero position measurements are used to constrain attitude drift : m
+    AP_Int8 _logging_mask;          // mask of IMUs to log
+    AP_Float _yawNoise;             // magnetic yaw measurement noise : rad
+    AP_Int16 _yawInnovGate;         // Percentage number of standard deviations applied to magnetic yaw innovation consistency check
+    AP_Int8 _tauVelPosOutput;       // Time constant of output complementary filter : csec (centi-seconds)
 
     // Tuning parameters
     const float gpsNEVelVarAccScale;    // Scale factor applied to NE velocity measurement variance due to manoeuvre acceleration
@@ -339,6 +358,15 @@ private:
     const float gndEffectBaroScaler;    // scaler applied to the barometer observation variance when ground effect mode is active
     const uint8_t gndGradientSigma;     // RMS terrain gradient percentage assumed by the terrain height estimation
     const uint8_t fusionTimeStep_ms;    // The minimum time interval between covariance predictions and measurement fusions in msec
-};
 
-#endif //AP_NavEKF2
+    struct {
+        bool enabled:1;
+        bool log_compass:1;
+        bool log_gps:1;
+        bool log_baro:1;
+        bool log_imu:1;
+    } logging;
+
+    // time at start of current filter update
+    uint64_t imuSampleTime_us;
+};

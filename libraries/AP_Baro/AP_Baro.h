@@ -1,13 +1,10 @@
 /// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
-
-#ifndef __AP_BARO_H__
-#define __AP_BARO_H__
+#pragma once
 
 #include <AP_HAL/AP_HAL.h>
 #include <AP_Param/AP_Param.h>
 #include <Filter/Filter.h>
 #include <Filter/DerivativeFilter.h>
-#include <AP_Buffer/AP_Buffer.h>
 
 // maximum number of sensor instances
 #define BARO_MAX_INSTANCES 3
@@ -107,13 +104,20 @@ public:
     // HIL (and SITL) interface, setting altitude
     void setHIL(float altitude_msl);
 
-    // HIL (and SITL) interface, setting pressure and temperature
-    void setHIL(uint8_t instance, float pressure, float temperature);
+    // HIL (and SITL) interface, setting pressure, temperature, altitude and climb_rate
+    // used by Replay
+    void setHIL(uint8_t instance, float pressure, float temperature, float altitude, float climb_rate, uint32_t last_update_ms);
 
     // HIL variables
     struct {
-        AP_Buffer<float,10> press_buffer;
-        AP_Buffer<float,10> temp_buffer;
+        float pressure;
+        float temperature;
+        float altitude;
+        float climb_rate;
+        uint32_t last_update_ms;
+        bool updated:1;
+        bool have_alt:1;
+        bool have_last_update:1;
     } _hil;
 
     // register a new sensor, claiming a sensor slot. If we are out of
@@ -125,6 +129,12 @@ public:
 
     // enable HIL mode
     void set_hil_mode(void) { _hil_mode = true; }
+
+    // set baro drift amount
+    void set_baro_drift_altitude(float alt) { _alt_offset = alt; }
+
+    // get baro drift amount
+    float get_baro_drift_offset(void) { return _alt_offset_active; }
 
 private:
     // how many drivers do we have?
@@ -150,6 +160,7 @@ private:
     } sensors[BARO_MAX_INSTANCES];
 
     AP_Float                            _alt_offset;
+    float                               _alt_offset_active;
     AP_Int8                             _primary_baro; // primary chosen by user
     float                               _last_altitude_EAS2TAS;
     float                               _EAS2TAS;
@@ -160,14 +171,6 @@ private:
 
     // when did we last notify the GCS of new pressure reference?
     uint32_t                            _last_notify_ms;
-    
+
     void SimpleAtmosphere(const float alt, float &sigma, float &delta, float &theta);
 };
-
-#include "AP_Baro_Backend.h"
-#include "AP_Baro_MS5611.h"
-#include "AP_Baro_BMP085.h"
-#include "AP_Baro_HIL.h"
-#include "AP_Baro_PX4.h"
-
-#endif // __AP_BARO_H__

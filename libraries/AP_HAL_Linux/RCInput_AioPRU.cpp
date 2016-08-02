@@ -14,18 +14,17 @@
 
 #if CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_BBBMINI
 
-#include <stdio.h>
-#include <sys/time.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <errno.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <poll.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <stdint.h>
+#include <sys/time.h>
+#include <unistd.h>
 
 #include "RCInput.h"
 #include "RCInput_AioPRU.h"
@@ -34,7 +33,7 @@ extern const AP_HAL::HAL& hal;
 
 using namespace Linux;
 
-void RCInput_AioPRU::init(void*)
+void RCInput_AioPRU::init()
 {
     int mem_fd = open("/dev/mem", O_RDWR|O_SYNC);
     if (mem_fd == -1) {

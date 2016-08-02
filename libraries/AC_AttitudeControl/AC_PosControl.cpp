@@ -41,7 +41,6 @@ AC_PosControl::AC_PosControl(const AP_AHRS& ahrs, const AP_InertialNav& inav,
     _dt_xy(POSCONTROL_DT_50HZ),
     _last_update_xy_ms(0),
     _last_update_z_ms(0),
-    _throttle_hover(POSCONTROL_THROTTLE_HOVER),
     _speed_down_cms(POSCONTROL_SPEED_DOWN),
     _speed_up_cms(POSCONTROL_SPEED_UP),
     _speed_cms(POSCONTROL_SPEED),
@@ -140,11 +139,14 @@ void AC_PosControl::set_alt_target_with_slew(float alt_cm, float dt)
 
     // do not use z-axis desired velocity feed forward
     _flags.use_desvel_ff_z = false;
-    _vel_desired.z = 0.0f;
 
     // adjust desired alt if motors have not hit their limits
     if ((alt_change<0 && !_motors.limit.throttle_lower) || (alt_change>0 && !_motors.limit.throttle_upper)) {
-        _pos_target.z += constrain_float(alt_change, _speed_down_cms*dt, _speed_up_cms*dt);
+        if (!is_zero(dt)) {
+            float climb_rate_cms = constrain_float(alt_change/dt, _speed_down_cms, _speed_up_cms);
+            _pos_target.z += climb_rate_cms*dt;
+            _vel_desired.z = climb_rate_cms;    // recorded for reporting purposes
+        }
     }
 
     // do not let target get too far from current altitude
@@ -197,10 +199,10 @@ void AC_PosControl::set_alt_target_from_climb_rate_ff(float climb_rate_cms, floa
     // jerk_z is calculated to reach full acceleration in 1000ms.
     float jerk_z = accel_z_cms * POSCONTROL_JERK_RATIO;
 
-    float accel_z_max = min(accel_z_cms, safe_sqrt(2.0f*fabsf(_vel_desired.z - climb_rate_cms)*jerk_z));
+    float accel_z_max = MIN(accel_z_cms, safe_sqrt(2.0f*fabsf(_vel_desired.z - climb_rate_cms)*jerk_z));
 
     _accel_last_z_cms += jerk_z * dt;
-    _accel_last_z_cms = min(accel_z_max, _accel_last_z_cms);
+    _accel_last_z_cms = MIN(accel_z_max, _accel_last_z_cms);
 
     float vel_change_limit = _accel_last_z_cms * dt;
     _vel_desired.z = constrain_float(climb_rate_cms, _vel_desired.z-vel_change_limit, _vel_desired.z+vel_change_limit);
@@ -241,7 +243,7 @@ void AC_PosControl::relax_alt_hold_controllers(float throttle_setting)
     _accel_last_z_cms = 0.0f;
     _accel_target.z = -(_ahrs.get_accel_ef_blended().z + GRAVITY_MSS) * 100.0f;
     _flags.reset_accel_to_throttle = true;
-    _pid_accel_z.set_integrator(throttle_setting);
+    _pid_accel_z.set_integrator(throttle_setting*1000.0f);
 }
 
 // get_alt_error - returns altitude error in cm
@@ -304,7 +306,7 @@ void AC_PosControl::init_takeoff()
     freeze_ff_z();
 
     // shift difference between last motor out and hover throttle into accelerometer I
-    _pid_accel_z.set_integrator(_motors.get_throttle()-_throttle_hover);
+    _pid_accel_z.set_integrator((_motors.get_throttle()-_motors.get_throttle_hover())*1000.0f);
 }
 
 // is_active_z - returns true if the z-axis position controller has been run very recently
@@ -480,7 +482,7 @@ void AC_PosControl::accel_to_throttle(float accel_target_z)
     // get d term
     d = _pid_accel_z.get_d();
 
-    float thr_out = p+i+d+_throttle_hover;
+    float thr_out = (p+i+d)/1000.0f +_motors.get_throttle_hover();
 
     // send throttle to attitude controller with angle boost
     _attitude_control.set_throttle_out(thr_out, true, POSCONTROL_THROTTLE_CUTOFF_FREQ);
@@ -575,7 +577,7 @@ void AC_PosControl::get_stopping_point_xy(Vector3f &stopping_point) const
     }
 
     // calculate current velocity
-    float vel_total = pythagorous2(curr_vel.x, curr_vel.y);
+    float vel_total = norm(curr_vel.x, curr_vel.y);
 
     // avoid divide by zero by using current position if the velocity is below 10cm/s, kP is very low or acceleration is zero
     if (kP <= 0.0f || _accel_cms <= 0.0f || is_zero(vel_total)) {
@@ -742,6 +744,11 @@ void AC_PosControl::update_vel_controller_xyz(float ekfNavVelGainScaler)
     update_z_controller();
 }
 
+float AC_PosControl::get_horizontal_error() const
+{
+    return norm(_pos_error.x, _pos_error.y);
+}
+
 ///
 /// private methods
 ///
@@ -794,7 +801,7 @@ void AC_PosControl::pos_to_rate_xy(xy_mode mode, float dt, float ekfNavVelGainSc
         _pos_error.y = _pos_target.y - curr_pos.y;
 
         // constrain target position to within reasonable distance of current location
-        _distance_to_target = pythagorous2(_pos_error.x, _pos_error.y);
+        _distance_to_target = norm(_pos_error.x, _pos_error.y);
         if (_distance_to_target > _leash && _distance_to_target > 0.0f) {
             _pos_target.x = curr_pos.x + _leash * _pos_error.x/_distance_to_target;
             _pos_target.y = curr_pos.y + _leash * _pos_error.y/_distance_to_target;
@@ -824,7 +831,7 @@ void AC_PosControl::pos_to_rate_xy(xy_mode mode, float dt, float ekfNavVelGainSc
             // the event of a disturbance
 
             // scale velocity within limit
-            float vel_total = pythagorous2(_vel_target.x, _vel_target.y);
+            float vel_total = norm(_vel_target.x, _vel_target.y);
             if (vel_total > POSCONTROL_VEL_XY_MAX_FROM_POS_ERR) {
                 _vel_target.x = POSCONTROL_VEL_XY_MAX_FROM_POS_ERR * _vel_target.x/vel_total;
                 _vel_target.y = POSCONTROL_VEL_XY_MAX_FROM_POS_ERR * _vel_target.y/vel_total;
@@ -841,7 +848,7 @@ void AC_PosControl::pos_to_rate_xy(xy_mode mode, float dt, float ekfNavVelGainSc
             }
 
             // scale velocity within speed limit
-            float vel_total = pythagorous2(_vel_target.x, _vel_target.y);
+            float vel_total = norm(_vel_target.x, _vel_target.y);
             if (vel_total > _speed_cms) {
                 _vel_target.x = _speed_cms * _vel_target.x/vel_total;
                 _vel_target.y = _speed_cms * _vel_target.y/vel_total;
@@ -915,11 +922,11 @@ void AC_PosControl::accel_to_lean_angles(float dt, float ekfNavVelGainScaler, bo
 
     // limit acceleration if necessary
     if (use_althold_lean_angle) {
-        accel_max = min(accel_max, GRAVITY_MSS * 100.0f * sinf(ToRad(constrain_float(_attitude_control.get_althold_lean_angle_max(),1000,8000)/100.0f)));
+        accel_max = MIN(accel_max, GRAVITY_MSS * 100.0f * tanf(ToRad(constrain_float(_attitude_control.get_althold_lean_angle_max(),1000,8000)/100.0f)));
     }
 
     // scale desired acceleration if it's beyond acceptable limit
-    accel_total = pythagorous2(_accel_target.x, _accel_target.y);
+    accel_total = norm(_accel_target.x, _accel_target.y);
     if (accel_total > accel_max && accel_total > 0.0f) {
         _accel_target.x = accel_max * _accel_target.x/accel_total;
         _accel_target.y = accel_max * _accel_target.y/accel_total;
@@ -950,7 +957,7 @@ void AC_PosControl::accel_to_lean_angles(float dt, float ekfNavVelGainScaler, bo
     _accel_target_jerk_limited += accel_change;
 
     // lowpass filter on NE accel
-    _accel_target_filter.set_cutoff_frequency(min(_accel_xy_filt_hz, 5.0f*ekfNavVelGainScaler));
+    _accel_target_filter.set_cutoff_frequency(MIN(_accel_xy_filt_hz, 5.0f*ekfNavVelGainScaler));
     Vector2f accel_target_filtered = _accel_target_filter.apply(_accel_target_jerk_limited, dt);
 
     // rotate accelerations into body forward-right frame
@@ -958,17 +965,17 @@ void AC_PosControl::accel_to_lean_angles(float dt, float ekfNavVelGainScaler, bo
     accel_right = -accel_target_filtered.x*_ahrs.sin_yaw() + accel_target_filtered.y*_ahrs.cos_yaw();
 
     // update angle targets that will be passed to stabilize controller
-    _pitch_target = constrain_float(atanf(-accel_forward/(GRAVITY_MSS * 100))*(18000/M_PI_F),-lean_angle_max, lean_angle_max);
-    float cos_pitch_target = cosf(_pitch_target*M_PI_F/18000);
-    _roll_target = constrain_float(atanf(accel_right*cos_pitch_target/(GRAVITY_MSS * 100))*(18000/M_PI_F), -lean_angle_max, lean_angle_max);
+    _pitch_target = constrain_float(atanf(-accel_forward/(GRAVITY_MSS * 100))*(18000/M_PI),-lean_angle_max, lean_angle_max);
+    float cos_pitch_target = cosf(_pitch_target*M_PI/18000);
+    _roll_target = constrain_float(atanf(accel_right*cos_pitch_target/(GRAVITY_MSS * 100))*(18000/M_PI), -lean_angle_max, lean_angle_max);
 }
 
 // get_lean_angles_to_accel - convert roll, pitch lean angles to lat/lon frame accelerations in cm/s/s
 void AC_PosControl::lean_angles_to_accel(float& accel_x_cmss, float& accel_y_cmss) const
 {
     // rotate our roll, pitch angles into lat/lon frame
-    accel_x_cmss = (GRAVITY_MSS * 100) * (-(_ahrs.cos_yaw() * _ahrs.sin_pitch() / max(_ahrs.cos_pitch(),0.5f)) - _ahrs.sin_yaw() * _ahrs.sin_roll() / max(_ahrs.cos_roll(),0.5f));
-    accel_y_cmss = (GRAVITY_MSS * 100) * (-(_ahrs.sin_yaw() * _ahrs.sin_pitch() / max(_ahrs.cos_pitch(),0.5f)) + _ahrs.cos_yaw() * _ahrs.sin_roll() / max(_ahrs.cos_roll(),0.5f));
+    accel_x_cmss = (GRAVITY_MSS * 100) * (-(_ahrs.cos_yaw() * _ahrs.sin_pitch() / MAX(_ahrs.cos_pitch(),0.5f)) - _ahrs.sin_yaw() * _ahrs.sin_roll() / MAX(_ahrs.cos_roll(),0.5f));
+    accel_y_cmss = (GRAVITY_MSS * 100) * (-(_ahrs.sin_yaw() * _ahrs.sin_pitch() / MAX(_ahrs.cos_pitch(),0.5f)) + _ahrs.cos_yaw() * _ahrs.sin_roll() / MAX(_ahrs.cos_roll(),0.5f));
 }
 
 /// calc_leash_length - calculates the horizontal leash length given a maximum speed, acceleration and position kP gain

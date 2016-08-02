@@ -15,25 +15,13 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef __EXTERNALLED_H__
-#define __EXTERNALLED_H__
+#pragma once
 
 #include <AP_Common/AP_Common.h>
 #include <AP_HAL/AP_HAL.h>
 #include <AP_Param/AP_Param.h>
-#include "NotifyDevice.h"
 
-#if CONFIG_HAL_BOARD == HAL_BOARD_VRBRAIN
- #define EXTERNAL_LED_GPS     28    // GPS LED - AN10
- #define EXTERNAL_LED_ARMED   29    // Armed LED - AN11
- #define EXTERNAL_LED_MOTOR1  30    // Motor1 LED - AN8
- #define EXTERNAL_LED_MOTOR2  31    // Motor2 LED - AN12
-#else
- #define EXTERNAL_LED_GPS     0     // pin definitions to allow this lib to build for
- #define EXTERNAL_LED_ARMED   0     // for other boards even though
- #define EXTERNAL_LED_MOTOR1  0     // they will never be used
- #define EXTERNAL_LED_MOTOR2  0
-#endif
+#include "NotifyDevice.h"
 
 class ExternalLED: public NotifyDevice
 {
@@ -43,7 +31,7 @@ public:
 
     // initialise the LED driver
     bool init(void);
-    
+
     // should be called at 50Hz
     void update(void);
 
@@ -82,5 +70,3 @@ private:
     void motor_led1(bool on_off);
     void motor_led2(bool on_off);
 };
-
-#endif // __EXTERNALLED_H__

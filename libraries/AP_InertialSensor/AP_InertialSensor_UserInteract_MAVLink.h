@@ -1,12 +1,11 @@
-
-#ifndef __AP_INERTIAL_SENSOR_USER_INTERACT_MAVLINK_H__
-#define __AP_INERTIAL_SENSOR_USER_INTERACT_MAVLINK_H__
-
-#include "AP_InertialSensor_UserInteract.h"
+#pragma once
 
 #include <AP_Common/AP_Common.h>
 #include <AP_HAL/AP_HAL.h>
 #include <GCS_MAVLink/GCS_MAVLink.h>
+
+
+#include "AP_InertialSensor_UserInteract.h"
 
 class GCS_MAVLINK;
 
@@ -19,10 +18,7 @@ public:
     _gcs(gcs) {}
 
     bool blocking_read();
-    void printf(const char *, ...) FORMAT(2, 3);
+    void printf(const char *, ...) FMT_PRINTF(2, 3);
 private:
     GCS_MAVLINK *_gcs;
 };
-
-#endif // __AP_INERTIAL_SENSOR_USER_INTERACT_MAVLINK_H__
-

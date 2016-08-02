@@ -1,6 +1,4 @@
-
-#ifndef __AP_HAL_PX4_SCHEDULER_H__
-#define __AP_HAL_PX4_SCHEDULER_H__
+#pragma once
 
 #include <AP_HAL/AP_HAL.h>
 #if CONFIG_HAL_BOARD == HAL_BOARD_PX4
@@ -45,7 +43,7 @@ public:
     PX4Scheduler();
     /* AP_HAL::Scheduler methods */
 
-    void     init(void *unused);
+    void     init();
     void     delay(uint16_t ms);
     void     delay_microseconds(uint16_t us);
     void     delay_microseconds_boost(uint16_t us);
@@ -58,7 +56,6 @@ public:
     void     reboot(bool hold_in_bootloader);
 
     bool     in_timerprocess();
-    bool     system_initializing();
     void     system_initialized();
     void     hal_initialized() { _hal_initialized = true; }
     
@@ -68,7 +65,6 @@ private:
     AP_HAL::Proc _delay_cb;
     uint16_t _min_delay_cb_ms;
     AP_HAL::Proc _failsafe;
-    volatile bool _timer_pending;
 
     volatile bool _timer_suspended;
 
@@ -88,10 +84,10 @@ private:
     pthread_t _storage_thread_ctx;
     pthread_t _uart_thread_ctx;
 
-    void *_timer_thread(void);
-    void *_io_thread(void);
-    void *_storage_thread(void);
-    void *_uart_thread(void);
+    static void *_timer_thread(void *arg);
+    static void *_io_thread(void *arg);
+    static void *_storage_thread(void *arg);
+    static void *_uart_thread(void *arg);
 
     void _run_timers(bool called_from_timer_thread);
     void _run_io(void);
@@ -104,6 +100,3 @@ private:
     perf_counter_t  _perf_delay;
 };
 #endif
-#endif // __AP_HAL_PX4_SCHEDULER_H__
-
-

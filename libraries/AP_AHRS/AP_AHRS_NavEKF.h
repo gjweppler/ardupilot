@@ -1,6 +1,6 @@
 /// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
-#ifndef __AP_AHRS_NAVEKF_H__
-#define __AP_AHRS_NAVEKF_H__
+#pragma once
+
 /*
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -25,6 +25,10 @@
 #include <AP_HAL/AP_HAL.h>
 #include "AP_AHRS.h"
 
+#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
+#include <SITL/SITL.h>
+#endif
+
 #if HAL_CPU_CLASS >= HAL_CPU_CLASS_150
 #include <AP_NavEKF/AP_NavEKF.h>
 #include <AP_NavEKF2/AP_NavEKF2.h>
@@ -32,6 +36,17 @@
 
 #define AP_AHRS_NAVEKF_AVAILABLE 1
 #define AP_AHRS_NAVEKF_SETTLE_TIME_MS 20000     // time in milliseconds the ekf needs to settle after being started
+
+/*
+  we are too close to running out of flash on px4, so disable
+  it. Leave it enabled on V4 for now as that has sufficient flash
+  space
+ */
+#if CONFIG_HAL_BOARD == HAL_BOARD_PX4 && (defined(CONFIG_ARCH_BOARD_PX4FMU_V1) || defined(CONFIG_ARCH_BOARD_PX4FMU_V2))
+#define AP_AHRS_WITH_EKF1 0
+#else
+#define AP_AHRS_WITH_EKF1 1
+#endif
 
 class AP_AHRS_NavEKF : public AP_AHRS_DCM
 {
@@ -43,18 +58,11 @@ public:
 
     // Constructor
     AP_AHRS_NavEKF(AP_InertialSensor &ins, AP_Baro &baro, AP_GPS &gps, RangeFinder &rng,
-                   NavEKF &_EKF1, NavEKF2 &_EKF2, Flags flags = FLAG_NONE
-        ) :
-        AP_AHRS_DCM(ins, baro, gps),
-        EKF1(_EKF1),
-        EKF2(_EKF2),
-        _flags(flags)
-    {
-    }
+                   NavEKF &_EKF1, NavEKF2 &_EKF2, Flags flags = FLAG_NONE);
 
     // return the smoothed gyro vector corrected for drift
     const Vector3f &get_gyro(void) const;
-    const Matrix3f &get_dcm_matrix(void) const;
+    const Matrix3f &get_rotation_body_to_ned(void) const;
 
     // return the current drift correction integrator value
     const Vector3f &get_gyro_drift(void) const;
@@ -132,6 +140,14 @@ public:
     bool get_velocity_NED(Vector3f &vec) const;
     bool get_relative_position_NED(Vector3f &vec) const;
 
+    // return the relative position in North/East order
+    // return true if the estimate is valid
+    bool get_relative_position_NE(Vector2f &posNE) const;
+
+    // return the relative position in North/East order
+    // return true if the estimate is valid
+    bool get_relative_position_D(float &posD) const;
+
     // Get a derivative of the vertical position in m/s which is kinematically consistent with the vertical position is required by some control loops.
     // This is different to the vertical velocity from the EKF which is not always consistent with the verical position due to the various errors that are being corrected for.
     bool get_vert_pos_rate(float &velocity);
@@ -139,7 +155,7 @@ public:
     // write optical flow measurements to EKF
     void writeOptFlowMeas(uint8_t &rawFlowQuality, Vector2f &rawFlowRates, Vector2f &rawGyroRates, uint32_t &msecFlowMeas);
 
-    // inibit GPS useage
+    // inibit GPS usage
     uint8_t setInhibitGPS(void);
 
     // get speed limit
@@ -158,7 +174,7 @@ public:
 
     // get compass offset estimates
     // true if offsets are valid
-    bool getMagOffsets(Vector3f &magOffsets);
+    bool getMagOffsets(uint8_t mag_idx, Vector3f &magOffsets);
 
     // report any reason for why the backend is refusing to initialise
     const char *prearm_failure_reason(void) const override;
@@ -200,18 +216,44 @@ public:
     // boolean false is returned if variances are not available
     bool get_variances(float &velVar, float &posVar, float &hgtVar, Vector3f &magVar, float &tasVar, Vector2f &offset) const;
 
+    // returns the expected NED magnetic field
+    bool get_mag_field_NED(Vector3f& ret) const;
+
+    // returns the estimated magnetic field offsets in body frame
+    bool get_mag_field_correction(Vector3f &ret) const;
+
+    void setTakeoffExpected(bool val);
+    void setTouchdownExpected(bool val);
+
+    bool getGpsGlitchStatus();
+
+    // used by Replay to force start at right timestamp
+    void force_ekf_start(void) { force_ekf = true; }
+
+    // is the EKF backend doing its own sensor logging?
+    bool have_ekf_logging(void) const override;
+    
 private:
-    enum EKF_TYPE {EKF_TYPE_NONE, EKF_TYPE1, EKF_TYPE2};
+    enum EKF_TYPE {EKF_TYPE_NONE=0,
+#if AP_AHRS_WITH_EKF1
+                   EKF_TYPE1=1,
+#endif
+                   EKF_TYPE2=2
+#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
+                   ,EKF_TYPE_SITL=10
+#endif
+    };
     EKF_TYPE active_EKF_type(void) const;
 
     bool always_use_EKF() const {
-        return _flags & FLAG_ALWAYS_USE_EKF;
+        return _ekf_flags & FLAG_ALWAYS_USE_EKF;
     }
 
     NavEKF &EKF1;
     NavEKF2 &EKF2;
-    bool ekf1_started = false;
-    bool ekf2_started = false;
+    bool ekf1_started:1;
+    bool ekf2_started:1;
+    bool force_ekf:1;
     Matrix3f _dcm_matrix;
     Vector3f _dcm_attitude;
     Vector3f _gyro_bias;
@@ -220,13 +262,16 @@ private:
     Vector3f _accel_ef_ekf_blended;
     const uint16_t startup_delay_ms = 1000;
     uint32_t start_time_ms = 0;
-    Flags _flags;
+    Flags _ekf_flags;
 
     uint8_t ekf_type(void) const;
     void update_DCM(void);
     void update_EKF1(void);
     void update_EKF2(void);
+
+#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
+    SITL::SITL *_sitl;
+    void update_SITL(void);
+#endif    
 };
 #endif
-
-#endif // __AP_AHRS_NAVEKF_H__

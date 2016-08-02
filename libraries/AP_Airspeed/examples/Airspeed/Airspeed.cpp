@@ -15,18 +15,19 @@
  */
 
 /*
- *   Airspeed.pde - airspeed example sketch
+ *   Airspeed.cpp - airspeed example sketch
  *
  */
 
-#include <AP_HAL/AP_HAL.h>
 #include <AP_ADC/AP_ADC.h>
-#include <AP_ADC_AnalogSource/AP_ADC_AnalogSource.h>
 #include <AP_Airspeed/AP_Airspeed.h>
+#include <AP_HAL/AP_HAL.h>
 
 const AP_HAL::HAL& hal = AP_HAL::get_HAL();
 
 static AP_Vehicle::FixedWing aparm;
+
+float temperature;
 
 AP_Airspeed airspeed(aparm);
 
@@ -48,7 +49,9 @@ void loop(void)
     if((AP_HAL::millis() - timer) > 100) {
         timer = AP_HAL::millis();
         airspeed.read();
-        hal.console->printf("airspeed %.2f healthy=%u\n", airspeed.get_airspeed(), airspeed.healthy());
+        airspeed.get_temperature(temperature);
+
+        hal.console->printf("airspeed %5.2f temperature %6.2f healthy = %u\n", airspeed.get_airspeed(), temperature, airspeed.healthy());
     }
     hal.scheduler->delay(1);
 }

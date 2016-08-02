@@ -17,9 +17,7 @@
 //      Copyright (c) 2010 Michael Smith. All rights reserved.
 //
 //
-
-#ifndef __AP_HAL_UTILITY_BETTERSTREAM_H__
-#define __AP_HAL_UTILITY_BETTERSTREAM_H__
+#pragma once
 
 #include <stdarg.h>
 
@@ -32,9 +30,6 @@ class AP_HAL::BetterStream : public AP_HAL::Stream {
 public:
     BetterStream(void) {}
 
-    virtual void printf(const char *, ...) FORMAT(2, 3) = 0;
+    virtual void printf(const char *, ...) FMT_PRINTF(2, 3) = 0;
     virtual void vprintf(const char *, va_list) = 0;
 };
-
-#endif // __AP_HAL_UTILITY_BETTERSTREAM_H__
-
